@@ -17,13 +17,17 @@ def extendReportWithRmsd(reportFile, rmsds):
         :returns: np.ndarray -- Extended report file with corrected rmsd values
     """
     newShape = reportFile.shape
-    fixedReport = np.zeros((newShape[0], newShape[1]+1))
-    fixedReport[:, :-1] = reportFile
-    fixedReport[:, -1] = rmsds
+    if len(rmsds.shape) < 2:
+        add_cols = 1
+    else:
+        add_cols = rmsds.shape[1]
+    fixedReport = np.zeros((newShape[0], newShape[1]+add_cols))
+    fixedReport[:, :-add_cols] = reportFile
+    fixedReport[:, -add_cols:] = rmsds
     return fixedReport
 
 
-def process_folder(epoch, folder, trajName, reportName, output_filename, top):
+def process_folder(epoch, folder, trajName, reportName, output_filename, top, trajs_to_select=None):
     if epoch is None:
         allTrajs = glob.glob(os.path.join(folder, trajName))
         full_reportName = os.path.join(folder, reportName)
@@ -35,6 +39,8 @@ def process_folder(epoch, folder, trajName, reportName, output_filename, top):
     allFiles = []
     for traj in allTrajs:
         trajNum = utilities.getTrajNum(traj)
+        if trajs_to_select is not None and trajNum not in trajs_to_select:
+            continue
         if top is not None:
             top_file = top.getTopologyFile(epoch, trajNum)
         else:

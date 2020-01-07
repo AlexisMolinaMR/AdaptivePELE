@@ -8,8 +8,9 @@ import shutil
 import string
 import itertools
 import numpy as np
-import mdtraj as md
+import MDAnalysis as MDA
 import multiprocessing as mp
+from MDAnalysis.analysis import align
 from builtins import range
 from AdaptivePELE.constants import constants, blockNames
 from AdaptivePELE.simulation import simulationTypes
@@ -120,6 +121,12 @@ class SimulationRunner:
             Return information relevant for MSMClustering
         """
         return True, self.parameters.peleSteps
+
+    def getResname(self):
+        """
+            Return the value of the ligand name
+        """
+        return None
 
     def getNumReplicas(self):
         """
@@ -883,12 +890,19 @@ class MDSimulation(SimulationRunner):
             :param epoch: Current epoch of the simulation
             :type epoch: int
         """
+        print("Processing trajectories for epoch", epoch)
         trajectory_files = glob.glob(os.path.join(output_path, constants.AmberTemplates.trajectoryTemplate.replace("%d", "*") % self.parameters.format))
         trajectory_files = [(traj, topology.getTopologyFile(epoch, utilities.getTrajNum(traj))) for traj in trajectory_files]
         pool = mp.Pool(self.parameters.trajsPerReplica)
         pool.map(processTraj, trajectory_files)
         pool.close()
         pool.join()
+
+    def getResname(self):
+        """
+            Return the value of the ligand name
+        """
+        return self.parameters.ligandName
 
     def equilibrate(self, initialStructures, outputPathConstants, reportFilename, outputPath, resname, processManager, topologies=None):
         """
@@ -922,9 +936,6 @@ class MDSimulation(SimulationRunner):
             processManager.barrier()
             return []
         initialStructures = processManager.getStructureListPerReplica(initialStructures, self.parameters.trajsPerReplica)
-        # the new initialStructures list contains tuples in the form (i,
-        # structure) where i is the index of structure in the original list
-        newInitialStructures = []
         solvatedStrcutures = []
         equilibrationFiles = []
         equilibrationOutput = outputPathConstants.equilibrationDir
@@ -1018,9 +1029,10 @@ class MDSimulation(SimulationRunner):
         for i, equilibrationFilePair in enumerate(equilibrationFiles):
             reportName = os.path.join(equilibrationOutput, "equilibrated_system_%d.pdb" % (i+processManager.id*self.parameters.trajsPerReplica))
             workers.append(pool.apply_async(sim.runEquilibration, args=(equilibrationFilePair, reportName, self.parameters, i)))
-
-        for worker in workers:
-            newInitialStructures.append(worker.get())
+        pool.close()
+        # the new initialStructures list contains tuples in the form (i,
+        # structure) where i is the index of structure in the original list
+        newInitialStructures = utilities.get_workers_output(workers)
         pool.terminate()
         endTime = time.time()
         utilities.print_unbuffered("Equilibration took %.2f sec" % (endTime - startTime))
@@ -1156,8 +1168,8 @@ class MDSimulation(SimulationRunner):
                 checkpoint = checkpoints[i + processManager.id * self.parameters.trajsPerReplica]
             workerNumber = i
             workers.append(pool.apply_async(sim.runProductionSimulation, args=(startingFiles, workerNumber, outputDir, seed, self.parameters, reportFileName, checkpoint, self.parameters.ligandName, processManager.id, self.parameters.trajsPerReplica, epoch, self.restart)))
-        for worker in workers:
-            worker.get()
+        pool.close()
+        utilities.get_workers_output(workers)
         pool.terminate()
         endTime = time.time()
         self.restart = False
@@ -1552,8 +1564,10 @@ def processTraj(input_files):
         :type input_files: tuple
     """
     traj_file, top_file = input_files
-    t = md.load(traj_file, top=top_file)
-    backbone_selection = t.top.select("backbone")
-    t.image_molecules()
-    t.superpose(t, atom_indices=backbone_selection)
-    t.save(traj_file)
+    mobile = MDA.Universe(top_file)
+    new_file = "%s_new%s" % os.path.splitext(traj_file)
+    t = MDA.Universe(top_file, traj_file)
+    t.atoms.wrap(compound="residues")
+    alignment = align.AlignTraj(t, mobile, select="backbone", filename=new_file)
+    alignment.run()
+    os.rename(new_file, traj_file)

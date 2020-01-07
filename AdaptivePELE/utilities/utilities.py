@@ -42,7 +42,7 @@ class UnspecifiedPELECrashException(Exception):
     __module__ = Exception.__module__
 
 
-class Topology:
+class Topology(object):
     """
         Container object that points to the topology used in each trajectory
     """
@@ -73,7 +73,7 @@ class Topology:
         """
             Dump the contents of the topology object using pickle
         """
-        writeObject(os.path.join(self.path, "topologies.pkl"), self)
+        writeObject(os.path.join(self.path, "topologies.pkl"), self, protocol=2)
 
     def setTopologies(self, topologyFiles, cleanFiles=True):
         """
@@ -251,7 +251,10 @@ def makeFolder(outputDir):
     try:
         os.makedirs(outputDir)
     except OSError as exc:
-        if exc.errno != errno.EEXIST:
+        # if at this point another process has created the folder we are already
+        # happy. If not, we complain
+        if exc.errno != errno.EEXIST or not os.path.isdir(outputDir):
+            print(exc.args)
             raise
 
 
@@ -316,6 +319,19 @@ def getTrajNum(trajFilename):
         :returns: int -- Trajectory number
     """
     return int(trajFilename.split("_")[-1][:-4])
+
+
+def getReportNum(reportFilename):
+    """
+        Gets the report number
+
+        :param reportFilename: Trajectory filename
+        :type reportFilename: str
+
+        :returns: int -- Report number
+    """
+    name, _ = os.path.splitext(reportFilename)
+    return int(name.split("_")[-1])
 
 
 def getPrmtopNum(prmtopFilename):
@@ -780,7 +796,7 @@ def getFileExtension(trajectoryFile):
     return os.path.splitext(trajectoryFile)[1]
 
 
-def loadtxtfile(filename, usecols=None, postprocess=True):
+def loadtxtfile(filename, usecols=None, postprocess=True, dtype=float):
     """
         Load a table file from a text file
 
@@ -790,10 +806,12 @@ def loadtxtfile(filename, usecols=None, postprocess=True):
         :type usecols: int
         :param postprocess: Whether to add an extra dimension if only one line present in the txt file
         :type postprocess: bool
+        :param dtype: Data-type of the resulting array, (default float)
+        :type dtype: data-type
 
         :returns: np.ndarray -- Contents of the text file
     """
-    metrics = np.genfromtxt(filename, missing_values=str("--"), filling_values='0', usecols=usecols)
+    metrics = np.genfromtxt(filename, missing_values=str("--"), filling_values='0', usecols=usecols, dtype=dtype)
     if len(metrics.shape) < 2 and postprocess:
         metrics = metrics[np.newaxis, :]
     return metrics
@@ -872,3 +890,34 @@ def get_available_backend():
     elif "power" in machine:
         # CTE-Power
         return "tkagg"
+
+
+def get_workers_output(workers, wait_time=60):
+    """
+        Get the output of a pool of workers without serializing the program at the get.
+
+        :param workers: List of AsyncResult objects created when passing work to the pool
+        :type workers: list
+        :param wait_time: Number of second to wait before checking if next worker is finished
+        :type wait_time: int
+
+        :returns: list -- List containing the output of all workers, if the function
+        passed to the pool had no return value it will be a list of None objects
+    """
+    # fill the list of results with placeholder zeros
+    results = [0 for _ in range(len(workers))]
+    to_finish = list(range(len(workers)))
+    # loop over all processes of the pool, waiting for a minute and checking
+    # if they are finished, this allows to query and reraise exceptions
+    # withiout waiting for previous succesfull workers to finish
+    while to_finish:
+        i = to_finish.pop(0)
+        workers[i].wait(wait_time)
+        if workers[i].ready():
+            # mantain the order of the results in which they were submitted,
+            # this is assumed in some places where multiprocessing is used
+            results[i] = workers[i].get()
+        else:
+            # if worker is not done append it again at the end of the queue
+            to_finish.append(i)
+    return results
